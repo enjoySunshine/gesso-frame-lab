@@ -1,0 +1,16 @@
+### These suppressions assume that GLib was built with TSan instrumentation ###
+
+## The suppressions below match only the top frame of report stacks
+
+# GClosure mixes atomic compare and exchange with non atomic reads
+# (read of cl->n_guards and cl->derivative_flag is non atomic)
+# https://gitlab.gnome.org/GNOME/glib/-/issues/1672
+race_top:closure_invoke_notifiers
+race_top:g_cclosure_marshal_VOID__POINTER
+race_top:vips_INT__VOID
+
+## The suppressions below match all frames of report stacks
+
+# Unsynchronized read of once->status from g_once
+# https://gitlab.gnome.org/GNOME/glib/-/issues/1672
+race:g_once_impl
