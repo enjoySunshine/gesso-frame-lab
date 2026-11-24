@@ -70,6 +70,11 @@ int vips_shrinkv(VipsImage *in, VipsImage **out, int vshrink, ...)
 	G_GNUC_NULL_TERMINATED;
 
 VIPS_API
+int vips_linear_shrink(VipsImage *in, VipsImage **out,
+	int hshrink, int vshrink, ...)
+	G_GNUC_NULL_TERMINATED;
+
+VIPS_API
 int vips_reduce(VipsImage *in, VipsImage **out,
 	double hshrink, double vshrink, ...)
 	G_GNUC_NULL_TERMINATED;

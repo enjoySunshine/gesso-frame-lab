@@ -151,6 +151,12 @@ typedef struct _VipsThumbnail {
 	int heif_thumbnail_width;
 	int heif_thumbnail_height;
 
+	/* The integer shrink factor the JPEG/UHDR loader applied. In linear
+	 * mode we fuse the sRGB->linear conversion with a box shrink and want
+	 * to know how far the loader already shrank.
+	 */
+	int jpeg_preshrink;
+
 	/* Pyramids are stored in subifds.
 	 */
 	gboolean subifd_pyramid;
@@ -549,8 +555,20 @@ vips_thumbnail_find_jpegshrink(VipsThumbnail *thumbnail, int width, int height)
 	double shrink =
 		vips_thumbnail_calculate_common_shrink(thumbnail, width, height);
 
-	if (thumbnail->linear)
-		return 1;
+	/* In linear mode we fuse the sRGB->linear conversion with a box
+	 * shrink, so we can still exploit JPEG shrink-on-load. The fused
+	 * approximation stays within one code value of the plain linear path
+	 * only when the fused stage itself averages several samples: require
+	 * enough total shrink that, after the on-load factor of 2, there is
+	 * still a block shrink of 2 or more left for the fused stage.
+	 * Otherwise load at full resolution and use the exact linear path.
+	 */
+	if (thumbnail->linear) {
+		if (shrink >= 8)
+			return 2;
+		else
+			return 1;
+	}
 
 	/* Shrink-on-load is a simple block shrink and will add quite a bit of
 	 * extra sharpness to the image. We want to block shrink to a
@@ -669,6 +687,7 @@ vips_thumbnail_get_level(VipsThumbnail *thumbnail)
 		vips_isprefix("VipsForeignLoadUhdr", thumbnail->loader)) {
 		factor = vips_thumbnail_find_jpegshrink(thumbnail,
 			thumbnail->input_width, thumbnail->input_height);
+		thumbnail->jpeg_preshrink = (int) factor;
 		g_info("loading with factor %g pre-shrink", factor);
 	}
 	else if (vips_isprefix("VipsForeignLoadTiff", thumbnail->loader) ||
@@ -848,6 +867,59 @@ vips_thumbnail_build(VipsObject *object)
 	 * vips_resize().
 	 */
 	if (thumbnail->linear) {
+		/* The fast path: a plain 8-bit sRGB image (no ICC or CICP
+		 * colour management) which the loader already block-shrank.
+		 * Fuse the sRGB->scRGB linearisation with another integer box
+		 * shrink, so the conversion and the averaging run on the same
+		 * pixels and no full-resolution float buffer is needed.
+		 */
+		gboolean can_fuse_linear =
+			!can_cicp &&
+			!can_icc_import &&
+			in->BandFmt == VIPS_FORMAT_UCHAR &&
+			in->Bands == 3 &&
+			thumbnail->jpeg_preshrink > 1;
+
+		/* Only fuse when the fused stage itself averages several
+		 * samples. The loader pre-shrink plus this box must reproduce
+		 * the plain linear path's integer block reduction; if the box
+		 * would be 1, the encoded-space loader shrink alone can drift
+		 * by more than a code value, so leave can_fuse_linear FALSE and
+		 * take the exact colourspace path below.
+		 */
+		if (can_fuse_linear) {
+			double common =
+				vips_thumbnail_calculate_common_shrink(
+					thumbnail,
+					thumbnail->input_width,
+					thumbnail->input_height);
+			int total_block = VIPS_MAX(1,
+				(int) floor(common / 2.0));
+			int box = VIPS_MAX(1,
+				total_block / thumbnail->jpeg_preshrink);
+
+			box = VIPS_CLIP(1, box, 8);
+
+			if (box < 2)
+				can_fuse_linear = FALSE;
+			else {
+				g_info("fusing sRGB->linear with box shrink %d",
+					box);
+				if (vips_linear_shrink(in, &t[2], box, box,
+					NULL))
+					return -1;
+				in = t[2];
+
+				/* The fused box shrink changed the image size;
+				 * refresh the page height used below to size the
+				 * resize so it describes the image we actually
+				 * feed to vips_resize.
+				 */
+				preshrunk_page_height =
+					vips_image_get_page_height(in);
+			}
+		}
+
 		/* We can linearise in three ways: cicp, uhdr, icc, and manually.
 		 * We don't linearise uhdr, it's too slow and annoying.
 		 */
@@ -875,8 +947,8 @@ vips_thumbnail_build(VipsObject *object)
 
 			have_imported = TRUE;
 		}
-		else {
-			/* Otherwise, use scRGB or GREY16 for linear shrink.
+		else if (!can_fuse_linear) {
+			/* Exact path: use scRGB or GREY16 for linear shrink.
 			 */
 			VipsInterpretation interpretation;
 
@@ -1391,6 +1463,7 @@ vips_thumbnail_init(VipsThumbnail *thumbnail)
 	thumbnail->auto_rotate = TRUE;
 	thumbnail->intent = VIPS_INTENT_RELATIVE;
 	thumbnail->fail_on = VIPS_FAIL_ON_NONE;
+	thumbnail->jpeg_preshrink = 0;
 }
 
 typedef struct _VipsThumbnailFile {

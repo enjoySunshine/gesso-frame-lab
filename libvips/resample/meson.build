@@ -11,6 +11,7 @@ resample_sources = files(
     'shrinkh_hwy.cpp',
     'shrinkv.c',
     'shrinkv_hwy.cpp',
+    'linearshrink.c',
     'reduce.c',
     'reduceh.cpp',
     'reduceh_hwy.cpp',
